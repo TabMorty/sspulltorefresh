@@ -40,6 +40,14 @@
 
 @import UIKit;
 
+typedef NS_ENUM(NSUInteger, SSPullToRefreshPosition) {
+	/// Add the pull to refresh view at the top of the scroll view
+			SSPullToRefreshViewPositionTop,
+
+	/// Add the pull to refresh view at the bottom of the scroll view
+			SSPullToRefreshViewPositionBottom
+};
+
 typedef NS_ENUM(NSUInteger, SSPullToRefreshViewState) {
 	/// Most will say "Pull to refresh" in this state
 	SSPullToRefreshViewStateNormal,
@@ -124,6 +132,11 @@ typedef NS_ENUM(NSUInteger, SSPullToRefreshViewStyle) {
  @see SSPullToRefreshViewState
  */
 @property (nonatomic, assign, readonly) SSPullToRefreshViewState state;
+
+/**
+ The position of the pull to refresh view. Default is `SSPullToRefreshPositionTop`.
+ */
+@property (nonatomic, assign) SSPullToRefreshPosition position;
 
 /**
  A pull to refresh view style. The default is `SSPullToRefreshViewStyleScrolling`.

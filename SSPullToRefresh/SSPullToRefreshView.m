@@ -14,7 +14,7 @@
 @property (nonatomic, readwrite) SSPullToRefreshViewState state;
 @property (nonatomic, readwrite) UIScrollView *scrollView;
 @property (nonatomic, readwrite, getter = isExpanded) BOOL expanded;
-@property (nonatomic) CGFloat topInset;
+@property (nonatomic) CGFloat yInset;
 @property (nonatomic) dispatch_semaphore_t animationSemaphore;
 @end
 
@@ -27,9 +27,10 @@
 @synthesize state = _state;
 @synthesize expanded = _expanded;
 @synthesize defaultContentInset = _defaultContentInset;
-@synthesize topInset = _topInset;
+@synthesize yInset = _yInset;
 @synthesize animationSemaphore = _animationSemaphore;
 @synthesize style = _style;
+@synthesize position = _position;
 
 
 #pragma mark - Accessors
@@ -58,7 +59,7 @@
 
 - (void)setExpanded:(BOOL)expanded {
 	_expanded = expanded;
-	[self _setContentInsetTop:expanded ? self.expandedHeight : 0.0f];
+	[self _setContentInsetY:expanded ? self.expandedHeight : 0.0f];
 }
 
 
@@ -66,13 +67,16 @@
 	void *context = (__bridge void *)self;
 	if ([_scrollView respondsToSelector:@selector(removeObserver:forKeyPath:context:)]) {
 		[_scrollView removeObserver:self forKeyPath:@"contentOffset" context:context];
+		[_scrollView removeObserver:self forKeyPath:@"contentSize" context:context];
 	} else if (_scrollView) {
 		[_scrollView removeObserver:self forKeyPath:@"contentOffset"];
+		[_scrollView removeObserver:self forKeyPath:@"contentSize"];
 	}
 
 	_scrollView = scrollView;
 	self.defaultContentInset = _scrollView.contentInset;
 	[_scrollView addObserver:self forKeyPath:@"contentOffset" options:NSKeyValueObservingOptionNew context:context];
+	[_scrollView addObserver:self forKeyPath:@"contentSize" options:NSKeyValueObservingOptionNew context:context];
 }
 
 
@@ -97,7 +101,15 @@
 
 - (void)setDefaultContentInset:(UIEdgeInsets)defaultContentInset {
 	_defaultContentInset = defaultContentInset;
-	[self _setContentInsetTop:self.topInset];
+	[self _setContentInsetY:self.yInset];
+}
+
+
+- (void)setPosition:(SSPullToRefreshPosition)position
+{
+	_position = position;
+	self.frame = [self _frameForPosition:position scrollView:self.scrollView];
+	[self setNeedsLayout];
 }
 
 
@@ -142,10 +154,15 @@
 	contentFrame.size = contentSize;
 	switch (self.style) {
 		case SSPullToRefreshViewStyleScrolling:
-			contentFrame.origin.y = size.height - contentSize.height;
+			contentFrame.origin.y = (self.position == SSPullToRefreshViewPositionTop)
+					? size.height - contentSize.height
+					: 0.0f;
 			break;
 		case SSPullToRefreshViewStyleStatic:
-			contentFrame.origin.y = size.height + self.defaultContentInset.top + self.scrollView.contentOffset.y;
+			contentFrame.origin.y = (self.position == SSPullToRefreshViewPositionTop)
+					? size.height + self.defaultContentInset.top + self.scrollView.contentOffset.y
+					: -self.defaultContentInset.bottom - (self.scrollView.contentSize.height - size.height)
+							+ fminf(self.scrollView.contentOffset.y, self.scrollView.contentSize.height) - contentSize.height;
 			break;
 	}
 
@@ -156,8 +173,7 @@
 #pragma mark - Initializer
 
 - (id)initWithScrollView:(UIScrollView *)scrollView delegate:(id<SSPullToRefreshViewDelegate>)delegate {
-	CGRect frame = CGRectMake(0.0f, 0.0f - scrollView.bounds.size.height, scrollView.bounds.size.width,
-							  scrollView.bounds.size.height);
+	CGRect frame = [self _frameForPosition:(SSPullToRefreshViewPositionTop) scrollView:scrollView];
 	if ((self = [super initWithFrame:frame])) {
 		for (UIView *view in self.scrollView.subviews) {
 			if ([view isKindOfClass:[SSPullToRefreshView class]]) {
@@ -246,14 +262,29 @@
 
 #pragma mark - Private
 
-- (void)_setContentInsetTop:(CGFloat)topInset {
-	self.topInset = topInset;
+- (CGRect)_frameForPosition:(SSPullToRefreshPosition)position scrollView:(UIScrollView *)scrollView
+{
+	CGFloat y = (position == SSPullToRefreshViewPositionTop)
+			? 0.0f - scrollView.bounds.size.height
+			: scrollView.contentSize.height;
+	CGRect frame = CGRectMake(0.0f, y, scrollView.bounds.size.width, scrollView.bounds.size.height);
+	return frame;
+}
+
+- (void)_setContentInsetY:(CGFloat)yInset
+{
+	self.yInset = yInset;
 
 	// Default to the scroll view's initial content inset
 	UIEdgeInsets inset = self.defaultContentInset;
 
 	// Add the top inset
-	inset.top += self.topInset;
+	if (self.position == SSPullToRefreshViewPositionTop) {
+		inset.top += self.yInset;
+	} else {
+		inset.bottom += self.yInset;
+	}
+
 
 	// Don't set it if that is already the current inset
 	if (UIEdgeInsetsEqualToEdgeInsets(self.scrollView.contentInset, inset)) {
@@ -270,8 +301,10 @@
 	}
 
 	// If scrollView is on top, scroll again to the top (needed for scrollViews with content > scrollView).
-	if (self.scrollView.contentOffset.y <= 0.0f) {
+	if (self.position == SSPullToRefreshViewPositionTop && self.scrollView.contentOffset.y <= 0.0f) {
 		[self.scrollView scrollRectToVisible:CGRectMake(0.0f, 0.0f, 1.0f, 1.0f) animated:NO];
+	} else if (self.position == SSPullToRefreshViewPositionBottom && self.scrollView.contentOffset.y >= self.scrollView.frame.size.height) {
+		[self.scrollView scrollRectToVisible:CGRectMake(0.0f, self.scrollView.contentOffset.y, 1.0f, 1.0f) animated:NO];
 	}
 
 	// Tell the delegate
@@ -352,17 +385,37 @@
 	}
 
 	// We don't care about this notificaiton
-	if (object != self.scrollView || ![keyPath isEqualToString:@"contentOffset"]) {
+	if (object != self.scrollView || (![keyPath isEqualToString:@"contentOffset"] && ![keyPath isEqualToString:@"contentSize"])) {
 		return;
 	}
 
+	if ([keyPath isEqualToString:@"contentSize"]) {
+		[self updateWithNewContentSize];
+	} else {
+		[self updateWithNewContentOffsize:[[change objectForKey:NSKeyValueChangeNewKey] CGPointValue]];
+	}
+}
+
+- (void)updateWithNewContentSize
+{
+	self.frame = [self _frameForPosition:self.position scrollView:self.scrollView];
+}
+
+- (void)updateWithNewContentOffsize:(CGPoint)contentOffset
+{
 	// Need to layout subviews for static style
 	if (self.style == SSPullToRefreshViewStyleStatic) {
 		[self setNeedsLayout];
 	}
-    
+
 	// Get the offset out of the change notification
-	CGFloat y = [[change objectForKey:NSKeyValueChangeNewKey] CGPointValue].y + self.defaultContentInset.top;
+	CGFloat yInset = (self.position == SSPullToRefreshViewPositionTop)
+			? self.defaultContentInset.top
+			: -self.defaultContentInset.bottom;
+	CGFloat scrollOffsetY = contentOffset.y + yInset;
+	CGFloat y = (self.position == SSPullToRefreshViewPositionTop)
+			? scrollOffsetY
+			: -(scrollOffsetY - self.scrollView.contentSize.height) - self.scrollView.frame.size.height;
 
 	// Scroll view is dragging
 	if (self.scrollView.isDragging) {
@@ -387,7 +440,7 @@
 		// Scroll view is loading
 		} else if (self.state == SSPullToRefreshViewStateLoading) {
             CGFloat insetAdjustment = y < 0 ? fmaxf(0, self.expandedHeight + y) : self.expandedHeight;
-			[self _setContentInsetTop:self.expandedHeight - insetAdjustment];
+			[self _setContentInsetY:self.expandedHeight - insetAdjustment];
 		}
 		return;
 	} else if (self.scrollView.isDecelerating) {
